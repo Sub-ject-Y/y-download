@@ -21,8 +21,6 @@ services:
     healthCheckPath: /health
     # Redeploy on every push to main (replaces the deprecated autoDeploy).
     autoDeployTrigger: commit
-    # Give an in-flight download a moment to finish before SIGKILL.
-    maxShutdownDelaySeconds: 60
     envVars:
       # Scratch space. Render's disk is ephemeral, so /tmp is the right home.
       - key: YTDL_MEDIA_DIR

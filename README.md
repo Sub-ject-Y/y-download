@@ -114,6 +114,10 @@ with a `/health` check.
 2. Render dashboard → **New +** → **Blueprint** → pick the repo.
 3. Render reads `render.yaml` and creates the service.
 
+Note: `maxShutdownDelaySeconds` is rejected for free-tier services, so the
+Blueprint leaves it out and Render's 30-second default applies. A redeploy or
+spin-down can therefore kill a download that is still running.
+
 Free plan caveats that matter for this app — see
 [Known limitations](#known-limitations-in-production) below.
 
