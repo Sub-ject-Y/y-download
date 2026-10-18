@@ -33,6 +33,10 @@ services:
         value: "3"
       - key: YTDL_RATE_LIMIT_JOBS
         value: "10"
+      # Size / disk guards default to safe values in app.py; override here if
+      # needed: YTDL_MAX_FILESIZE_MB (default 2048), YTDL_MIN_FREE_MB (512),
+      # YTDL_MAX_REQUEST_BYTES (16384), YTDL_RATE_LIMIT_GLOBAL (0 = off).
+      # Client IP uses YTDL_TRUSTED_PROXY_HOPS (default 1 in server mode).
       # ---------------------------------------------------------------------
       # HTTP Basic auth. render.yaml cannot carry a literal secret, so choose
       # one of these in the dashboard:

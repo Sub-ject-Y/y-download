@@ -16,11 +16,12 @@ Requires python3 plus two *system* binaries:
 from __future__ import annotations
 
 import base64
-import ipaddress
+import hmac
 import os
 import re
 import shutil
-import socket
+import sys
+import tempfile
 import threading
 import time
 import uuid
@@ -28,8 +29,15 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from flask import Flask, Response, jsonify, render_template, request, send_file
+from werkzeug.middleware.proxy_fix import ProxyFix
 
 import yt_dlp
+
+from netguard import (
+    install_urllib_redirect_guard,
+    install_ydl_redirect_guard,
+    validate_url,
+)
 
 try:  # optional: enables TLS/JA3 browser impersonation (see ytdlp_base_opts)
     import curl_cffi  # noqa: F401
@@ -84,11 +92,30 @@ SWEEP_ORPHANS = _env_flag("YTDL_SWEEP_ORPHANS", True)
 MAX_CONCURRENT_JOBS = _env_int("YTDL_MAX_CONCURRENT_JOBS", 3)
 RATE_LIMIT_JOBS = _env_int("YTDL_RATE_LIMIT_JOBS", 10)
 RATE_LIMIT_PREVIEWS = _env_int("YTDL_RATE_LIMIT_PREVIEWS", 60)
+# Optional hard ceiling on all requests per hour, shared by every client. A
+# safety net for when the per-IP key cannot be trusted. 0 disables it.
+RATE_LIMIT_GLOBAL = _env_int("YTDL_RATE_LIMIT_GLOBAL", 0)
 RATE_LIMIT_WINDOW = 3600
+
+# Request body cap (the JSON bodies here are tiny), plus a per-download size cap
+# and a free-space floor so a job can never fill the disk. All in the units the
+# variable name says; 0 disables that particular guard.
+MAX_REQUEST_BYTES = _env_int("YTDL_MAX_REQUEST_BYTES", 16 * 1024)
+MAX_FILESIZE_MB = _env_int("YTDL_MAX_FILESIZE_MB", 2048)
+MIN_FREE_MB = _env_int("YTDL_MIN_FREE_MB", 512)
+
+# How many reverse proxies to trust when reading X-Forwarded-For. 1 is right for
+# Render (its edge appends the real client IP). 0 ignores the header entirely.
+TRUSTED_PROXY_HOPS = _env_int("YTDL_TRUSTED_PROXY_HOPS", 1 if IS_SERVER else 0)
 
 # Optional HTTP Basic auth. Empty (the default) means the app is open.
 ACCESS_TOKEN = os.environ.get("YTDL_ACCESS_TOKEN") or ""
 ACCESS_USER = os.environ.get("YTDL_USERNAME") or "y-download"
+# When on, refuse to start in server mode without a token instead of warning.
+REQUIRE_AUTH = _env_flag("YTDL_REQUIRE_AUTH", False)
+# When on, refuse to start if the SSRF redirect guard cannot be installed on
+# yt-dlp's handlers instead of only warning.
+REQUIRE_GUARD = _env_flag("YTDL_REQUIRE_GUARD", False)
 
 # Optional cookies / proxy, needed when YouTube blocks the host's datacenter IP.
 PROXY = os.environ.get("YTDL_PROXY") or ""
@@ -98,6 +125,12 @@ COOKIES_FILE = Path(os.environ.get("YTDL_COOKIES_FILE") or (BASE_DIR / ".cookies
 # Impersonate a real browser for the generic extractor. Many sites answer
 # datacenter IPs with a Cloudflare 403; this is the documented remedy.
 GENERIC_IMPERSONATE = _env_flag("YTDL_GENERIC_IMPERSONATE", True)
+
+# When on, /info may hand the browser a direct media URL so eligible single-file
+# sources are fetched straight from the CDN, skipping server-side storage and
+# the /file hop entirely. Off by default, so production keeps the existing
+# server-side flow; ineligible sources always fall back to it regardless.
+DIRECT_DOWNLOAD = _env_flag("YTDL_DIRECT", False)
 
 # The quality choices offered in the UI -> yt-dlp format selector strings.
 #
@@ -125,7 +158,18 @@ ALLOWED_COOKIE_BROWSERS = {"chrome", "chromium", "firefox", "edge", "brave", "op
 
 ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
+# Job folders are always `uuid4().hex[:12]`. Restricting sweeps to this shape
+# means a stray file in the media directory is never deleted by accident.
+JOB_ID_RE = re.compile(r"^[0-9a-f]{12}$")
+
 app = Flask(__name__)
+app.config["MAX_CONTENT_LENGTH"] = MAX_REQUEST_BYTES
+if TRUSTED_PROXY_HOPS > 0:
+    # Trust exactly N proxy hops when rewriting the client IP. Anything the
+    # client put in front of those hops is ignored, so X-Forwarded-For cannot be
+    # used to forge an identity.
+    app.wsgi_app = ProxyFix(
+        app.wsgi_app, x_for=TRUSTED_PROXY_HOPS, x_proto=TRUSTED_PROXY_HOPS)
 
 # --------------------------------------------------------------------------
 # State
@@ -149,84 +193,30 @@ FFMPEG_PATH: str | None = None
 # --------------------------------------------------------------------------
 
 
+def _redact(text: str) -> str:
+    """Strip anything secret-ish out of a message before it leaves the process."""
+    if PROXY:
+        try:
+            parsed = urlparse(PROXY)
+            for secret in (parsed.username, parsed.password):
+                if secret:
+                    text = text.replace(secret, "***")
+            text = text.replace(PROXY, "http://<proxy>")
+        except ValueError:
+            pass
+    if COOKIES_PATH:
+        text = text.replace(str(COOKIES_PATH), "<cookies>")
+    if ACCESS_TOKEN:
+        text = text.replace(ACCESS_TOKEN, "***")
+    return text
+
+
 def clean_error(exc: BaseException) -> str:
-    """Turn a yt-dlp exception into a short, readable one-liner."""
+    """Turn a yt-dlp exception into a short, readable one-liner, sans secrets."""
     text = ANSI_RE.sub("", str(exc)).strip()
     text = re.sub(r"^ERROR:\s*", "", text)
     first = text.splitlines()[0] if text else exc.__class__.__name__
-    return first[:400] or exc.__class__.__name__
-
-
-INTERNAL_HOST_SUFFIXES = (
-    ".internal", ".local", ".localhost", ".home.arpa",
-    ".lan", ".corp", ".intranet", ".cluster.local",
-)
-
-
-def _resolve(host: str) -> list[str] | None:
-    try:
-        return [info[4][0] for info in socket.getaddrinfo(host, None)]
-    except (socket.gaierror, OSError):
-        return None
-
-
-def _host_error(host: str) -> str | None:
-    """
-    Return a refusal reason for a host yt-dlp must not fetch, else None.
-
-    Without this, /download is a server-side request forgery hole: yt-dlp's
-    generic extractor will happily fetch http://169.254.169.254/ (cloud metadata)
-    or any service reachable from inside the host's private network.
-
-    Fails CLOSED. An earlier version allowed the request through when DNS
-    resolution failed, which let http://metadata.google.internal/ reach the
-    extractor.
-    """
-    if not host:
-        return "That link has no host."
-    host = host.strip().rstrip(".").lower()
-    if not host:
-        return "That link has no host."
-    if host == "localhost" or host.endswith(INTERNAL_HOST_SUFFIXES):
-        return "That host is not allowed."
-    # A single-label name is never a public DNS name (also catches "[::1]").
-    if "." not in host:
-        return "That host is not allowed."
-
-    box: list[list[str] | None] = []
-    worker = threading.Thread(target=lambda: box.append(_resolve(host)), daemon=True)
-    worker.start()
-    worker.join(timeout=4)
-    if not box:
-        return "Could not resolve that host (timed out)."
-    addresses = box[0]
-    if not addresses:
-        return "Could not resolve that host."
-
-    for address in addresses:
-        try:
-            ip = ipaddress.ip_address(address.split("%")[0])
-        except ValueError:
-            return "That host is not allowed."
-        # is_global is False for private, loopback, link-local, reserved,
-        # multicast, unspecified and shared (CGNAT) ranges.
-        if not ip.is_global:
-            return "That host is not allowed."
-    return None
-
-
-def validate_url(url: str) -> str | None:
-    """Return an error message, or None when the url looks usable."""
-    if not url:
-        return "Please paste a video link."
-    if len(url) > 2048:
-        return "That link is too long."
-    parsed = urlparse(url)
-    if parsed.scheme not in ("http", "https"):
-        return "Only http:// and https:// links are supported."
-    if not parsed.netloc:
-        return "That doesn't look like a valid link."
-    return _host_error(parsed.hostname or "")
+    return _redact(first)[:400] or exc.__class__.__name__
 
 
 def supported_js_runtimes() -> dict:
@@ -243,8 +233,12 @@ def supported_js_runtimes() -> dict:
 
 def client_ip() -> str:
     """
-    Behind Render's proxy `--forwarded-allow-ips` has already rewritten
-    REMOTE_ADDR from X-Forwarded-For, so this is normally the real client.
+    The client address, accounting for a trusted reverse proxy.
+
+    Werkzeug's ProxyFix rewrote REMOTE_ADDR from the right-hand side of
+    X-Forwarded-For using TRUSTED_PROXY_HOPS, so a client cannot forge its
+    identity by prepending extra entries to that header. With 0 hops the header
+    is ignored and this is just the peer address.
     """
     return request.remote_addr or "unknown"
 
@@ -274,6 +268,19 @@ def active_job_count() -> int:
         return sum(1 for j in JOBS.values() if j.get("status") in ("queued", "downloading", "processing"))
 
 
+def disk_free_mb() -> int | None:
+    """Free megabytes on the media filesystem, or None if it cannot be read."""
+    try:
+        return shutil.disk_usage(DOWNLOAD_DIR).free // (1024 * 1024)
+    except OSError:
+        return None
+
+
+def global_rate_limited() -> bool:
+    """Optional site-wide hourly ceiling, a backstop when the per-IP key is unusable."""
+    return rate_limited("global", "all", RATE_LIMIT_GLOBAL)
+
+
 def ytdlp_base_opts() -> dict:
     """Options shared by the metadata and download paths."""
     opts: dict = {}
@@ -298,8 +305,84 @@ def ytdlp_base_opts() -> dict:
 # --------------------------------------------------------------------------
 
 
+class JobCancelled(Exception):
+    """Raised from a yt-dlp hook to abort a job the user asked to stop."""
+
+
+def _check_cancelled(job: dict) -> None:
+    event = job.get("cancel_event")
+    if event is not None and event.is_set():
+        raise JobCancelled()
+
+
+_GUARD_WARN_LOCK = threading.Lock()
+_GUARD_WARNED: set[str] = set()
+
+
+def _guard_warning(message: str) -> None:
+    """Emit one warning about the SSRF redirect guard not being installed."""
+    print(f"WARNING: {message}", file=sys.stderr)
+
+
+def _warn_guard_once(key: str, message: str) -> None:
+    with _GUARD_WARN_LOCK:
+        if key in _GUARD_WARNED:
+            return
+        _GUARD_WARNED.add(key)
+    _guard_warning(message)
+
+
+def ensure_urllib_guard() -> None:
+    """
+    Validate every redirect hop on yt-dlp's urllib handler.
+
+    Warns by default; refuses to start when YTDL_REQUIRE_GUARD=1.
+    """
+    if install_urllib_redirect_guard():
+        return
+    message = (
+        "the SSRF redirect guard could not be installed on yt-dlp's urllib "
+        "handler; redirect-based SSRF protection is degraded. Update or re-pin "
+        "yt-dlp, or set YTDL_REQUIRE_GUARD=1 to make this fatal."
+    )
+    if REQUIRE_GUARD:
+        raise SystemExit(f"YTDL_REQUIRE_GUARD is set but {message}")
+    _warn_guard_once("urllib", message)
+
+
+def _drop_unguarded_curl_handler(ydl) -> None:
+    """
+    Fail closed for the impersonating handler.
+
+    If its redirects cannot be validated, drop it so requests fall back to the
+    guarded urllib handler rather than fetching through an unguarded one.
+    """
+    try:
+        handlers = ydl._request_director.handlers
+    except Exception:  # pragma: no cover - yt-dlp internals changed
+        return
+    if "CurlCFFI" not in handlers:
+        return  # curl_cffi is not in use; the urllib path is guarded instead
+    handlers.pop("CurlCFFI", None)
+    _warn_guard_once(
+        "curl",
+        "the SSRF redirect guard could not be installed on the curl_cffi "
+        "handler; browser impersonation is disabled so the request falls back "
+        "to the guarded handler. Update or re-pin yt-dlp.",
+    )
+
+
+def make_ydl(opts: dict):
+    """Build a YoutubeDL with the redirect guard installed on its handlers."""
+    ydl = yt_dlp.YoutubeDL(opts)
+    if not install_ydl_redirect_guard(ydl):
+        _drop_unguarded_curl_handler(ydl)
+    return ydl
+
+
 def make_progress_hook(job: dict):
     def hook(d: dict) -> None:
+        _check_cancelled(job)
         status = d.get("status")
         if status == "downloading":
             total = d.get("total_bytes") or d.get("total_bytes_estimate") or 0
@@ -323,6 +406,7 @@ def make_progress_hook(job: dict):
 
 def make_postprocessor_hook(job: dict):
     def hook(d: dict) -> None:
+        _check_cancelled(job)
         if d.get("status") in ("started", "processing"):
             with JOBS_LOCK:
                 if job["status"] not in ("error", "done"):
@@ -365,6 +449,8 @@ def build_opts(job: dict, quality: str, cookie_browser: str | None) -> dict:
         "progress_hooks": [make_progress_hook(job)],
         "postprocessor_hooks": [make_postprocessor_hook(job)],
     }
+    if MAX_FILESIZE_MB > 0:
+        opts["max_filesize"] = MAX_FILESIZE_MB * 1024 * 1024
     opts.update(ytdlp_base_opts())
 
     if quality == "audio":
@@ -398,19 +484,124 @@ def find_output_file(outdir: Path) -> Path | None:
     return files[0]
 
 
+# Extensions a browser can save on its own from a single-file source.
+DIRECT_EXT_ALLOWLIST = {
+    "mp4", "webm", "mkv", "mov", "m4v",
+    "mp3", "m4a", "aac", "ogg", "opus", "wav", "flac",
+}
+# The subset that is audio, used to keep "audio only" honest.
+DIRECT_AUDIO_EXTS = {"mp3", "m4a", "aac", "ogg", "opus", "wav", "flac"}
+# Height cap per quality choice (mirrors the intent of QUALITY_FORMATS);
+# None means no cap. "audio" is handled separately (see below).
+_DIRECT_CAPS: dict[str, int | None] = {"best": None, "1080": 1080, "720": 720, "480": 480}
+
+
+def _has(value) -> bool:
+    return value not in (None, "none")
+
+
+def direct_candidate(meta: dict, quality: str) -> dict | None:
+    """
+    A browser-usable direct media URL for a single-file source, else None.
+
+    Only formats that are one already-muxed http(s) file qualify. Anything that
+    needs merging (separate video/audio streams), a manifest (HLS/DASH), media
+    fragments, or an MP3 transcode is refused, so the caller falls back to the
+    normal server-side job.
+
+    The candidate URL is re-validated with the same SSRF guard used for
+    user-supplied links, and fails closed. The URL is a bearer-style, often
+    signed and expiring credential, so it is returned to the authenticated
+    caller but never logged.
+    """
+    formats = [
+        f for f in (meta.get("formats") or [])
+        if isinstance(f, dict) and f.get("url")
+    ]
+    if not formats:
+        return None
+
+    def usable(f: dict) -> bool:
+        return (
+            (f.get("protocol") or "") in ("http", "https")
+            and not f.get("fragments")
+            and (f.get("ext") or "").lower() in DIRECT_EXT_ALLOWLIST
+        )
+
+    def muxed(f: dict) -> bool:
+        return _has(f.get("vcodec")) and _has(f.get("acodec"))
+
+    def audio_only(f: dict) -> bool:
+        return not _has(f.get("vcodec")) and _has(f.get("acodec"))
+
+    def no_codec_meta(f: dict) -> bool:
+        # A raw file link: yt-dlp reports no codec metadata for these.
+        return not _has(f.get("vcodec")) and not _has(f.get("acodec"))
+
+    def raw_direct(f: dict) -> bool:
+        return no_codec_meta(f) and usable(f)
+
+    if quality == "audio":
+        # Keep "audio only" honest: a single audio file, or a metadata-less
+        # direct link whose extension is itself audio.
+        f = formats[0] if len(formats) == 1 and usable(formats[0]) else None
+        if f is None:
+            return None
+        is_audio = audio_only(f) or (
+            no_codec_meta(f) and (f.get("ext") or "").lower() in DIRECT_AUDIO_EXTS
+        )
+        if not is_audio:
+            return None
+        fmt = f
+    else:
+        cap = _DIRECT_CAPS.get(quality)
+        pool = [
+            f for f in formats
+            if muxed(f) and usable(f) and (cap is None or (f.get("height") or 0) <= cap)
+        ]
+        if pool:
+            fmt = max(pool, key=lambda f: f.get("height") or 0)
+        elif len(formats) == 1 and raw_direct(formats[0]):
+            # A direct file link (single format, no codec metadata): accept the
+            # one file the source offers, whatever its real resolution.
+            fmt = formats[0]
+        else:
+            # Needs merging, a manifest, fragments, or is video/audio-only.
+            return None
+
+    url = fmt["url"]
+    if validate_url(url):
+        return None
+    return {
+        "url": url,
+        "ext": (fmt.get("ext") or "").lower(),
+        "filesize": fmt.get("filesize") or fmt.get("filesize_approx"),
+    }
+
+
+def _cleanup_dir(path) -> None:
+    """Best-effort removal of a job folder (partials, finished files, everything)."""
+    shutil.rmtree(path, ignore_errors=True)
+
+
 def run_job(job_id: str, url: str, quality: str, cookie_browser: str | None) -> None:
-    job = JOBS[job_id]
+    with JOBS_LOCK:
+        job = JOBS.get(job_id)
+    if job is None:  # deleted before the thread got here
+        _cleanup_dir(DOWNLOAD_DIR / job_id)
+        return
+
+    outdir = DOWNLOAD_DIR / job_id
     try:
         opts = build_opts(job, quality, cookie_browser)
-        with yt_dlp.YoutubeDL(opts) as ydl:
+        with make_ydl(opts) as ydl:
             info = ydl.extract_info(url, download=True)
 
         if isinstance(info, dict) and info.get("_type") == "playlist":
             entries = [e for e in (info.get("entries") or []) if e]
             info = entries[0] if entries else info
 
-        outdir = Path(job["dir"])
-        output = find_output_file(outdir)
+        output = find_output_file(Path(job["dir"]))
         if output is None:
             raise RuntimeError("Download finished but no file was produced.")
 
@@ -424,10 +615,20 @@ def run_job(job_id: str, url: str, quality: str, cookie_browser: str | None) -> 
             if isinstance(info, dict):
                 job["title"] = job.get("title") or info.get("title")
                 job["duration"] = info.get("duration")
-    except Exception as exc:  # noqa: BLE001 - surface any yt-dlp failure to the UI
+    except JobCancelled:
+        # The user asked to stop, or the delete endpoint cancelled the job.
+        _cleanup_dir(outdir)
         with JOBS_LOCK:
-            job["status"] = "error"
-            job["error"] = clean_error(exc)
+            if JOBS.get(job_id) is job:
+                JOBS.pop(job_id, None)
+    except Exception as exc:  # noqa: BLE001 - surface any yt-dlp failure to the UI
+        # A failed job leaves nothing worth keeping on disk.
+        _cleanup_dir(outdir)
+        with JOBS_LOCK:
+            if JOBS.get(job_id) is job:
+                job["status"] = "error"
+                job["error"] = clean_error(exc)
+                job["finished_at"] = time.time()
 
 
 def start_job(url: str, quality: str, cookie_browser: str | None) -> str:
@@ -441,6 +642,7 @@ def start_job(url: str, quality: str, cookie_browser: str | None) -> str:
             "percent": 0,
             "error": None,
             "created_at": time.time(),
+            "cancel_event": threading.Event(),
         }
     thread = threading.Thread(
         target=run_job,
@@ -458,9 +660,10 @@ def start_job(url: str, quality: str, cookie_browser: str | None) -> str:
 
 
 def drop_job(job_id: str) -> None:
+    """Remove a job and delete its folder. Callers must ensure it is not active."""
     job = JOBS.pop(job_id, None)
     folder = (job or {}).get("dir") or str(DOWNLOAD_DIR / job_id)
-    shutil.rmtree(folder, ignore_errors=True)
+    _cleanup_dir(folder)
 
 
 def janitor() -> None:
@@ -479,20 +682,26 @@ def janitor() -> None:
         except OSError:
             continue
         for folder in folders:
-            if folder.name == ".part":
+            # Only ever touch folders that look like a job's, never a stray file.
+            if not JOB_ID_RE.match(folder.name):
                 continue
             try:
                 stale = now - folder.stat().st_mtime > JOB_TTL_SECONDS
             except OSError:
                 continue
             if folder.name not in JOBS and stale:
-                shutil.rmtree(folder, ignore_errors=True)
+                _cleanup_dir(folder)
 
 
 def reset_download_dir() -> None:
-    for folder in DOWNLOAD_DIR.iterdir():
-        if folder.is_dir():
-            shutil.rmtree(folder, ignore_errors=True)
+    """Startup sweep: remove leftover job folders (filesystem may be stale from a crash)."""
+    try:
+        folders = [f for f in DOWNLOAD_DIR.iterdir() if f.is_dir()]
+    except OSError:
+        return
+    for folder in folders:
+        if JOB_ID_RE.match(folder.name):
+            _cleanup_dir(folder)
 
 
 def materialise_cookies() -> Path | None:
@@ -513,10 +722,26 @@ def materialise_cookies() -> Path | None:
 def _bootstrap() -> None:
     """One-time process init. Runs on import so it also works under gunicorn."""
     global COOKIES_PATH, JS_RUNTIME, FFMPEG_PATH
+    if not ACCESS_TOKEN:
+        if REQUIRE_AUTH:
+            raise SystemExit(
+                "YTDL_REQUIRE_AUTH is set but YTDL_ACCESS_TOKEN is empty; "
+                "refusing to start an unauthenticated instance.")
+        if IS_SERVER:
+            print(
+                "WARNING: YTDL_ACCESS_TOKEN is not set - this instance is PUBLIC "
+                "and anyone with the URL can use it. Set it in your host's "
+                "dashboard, or set YTDL_REQUIRE_AUTH=1 to make this fatal.",
+                file=sys.stderr,
+            )
     COOKIES_PATH = materialise_cookies()
     FFMPEG_PATH = shutil.which("ffmpeg")
     runtimes = supported_js_runtimes()
     JS_RUNTIME = next(iter(runtimes), None)
+    # Validate redirect hops on yt-dlp's urllib handler (the curl_cffi path is
+    # handled per-YoutubeDL in make_ydl). Warns, or refuses to start when
+    # YTDL_REQUIRE_GUARD=1.
+    ensure_urllib_guard()
     if SWEEP_ORPHANS:
         reset_download_dir()
     threading.Thread(target=janitor, name="janitor", daemon=True).start()
@@ -535,7 +760,8 @@ def require_auth():
     if request.path in ("/health", "/robots.txt"):
         return None
     auth = request.authorization
-    if not auth or auth.password != ACCESS_TOKEN:
+    supplied = auth.password if auth else ""
+    if not auth or not hmac.compare_digest(supplied, ACCESS_TOKEN):
         return Response(
             "Authentication required.",
             401,
@@ -567,19 +793,23 @@ def index():
         qualities=QUALITY_LABELS,
         is_server=IS_SERVER,
         auth_required=bool(ACCESS_TOKEN),
+        direct_enabled=DIRECT_DOWNLOAD,
         ttl_minutes=max(1, JOB_TTL_SECONDS // 60),
     )
 
 
 @app.get("/health")
 def health():
-    free_mb = None
+    free_mb = disk_free_mb()
+    # A unique probe file per call: a fixed name made concurrent health checks
+    # race, and one request's unlink() would 503 another's check.
     writable = False
     try:
-        free_mb = round(shutil.disk_usage(DOWNLOAD_DIR).free / (1024 * 1024))
-        probe = DOWNLOAD_DIR / ".health"
-        probe.touch()
-        probe.unlink()
+        fd, probe = tempfile.mkstemp(prefix=".health-", dir=DOWNLOAD_DIR)
+        try:
+            os.close(fd)
+        finally:
+            os.unlink(probe)
         writable = True
     except OSError:
         writable = False
@@ -619,8 +849,11 @@ def robots():
 def info():
     data = request.get_json(silent=True) or {}
     url = (data.get("url") or "").strip()
+    quality = (data.get("quality") or "best").strip()
+    if quality not in QUALITY_FORMATS:
+        quality = "best"
 
-    if rate_limited("info", client_ip(), RATE_LIMIT_PREVIEWS):
+    if rate_limited("info", client_ip(), RATE_LIMIT_PREVIEWS) or global_rate_limited():
         return jsonify(ok=False, error="Too many previews. Please wait a little while."), 429
 
     error = validate_url(url)
@@ -638,7 +871,7 @@ def info():
     opts.update(ytdlp_base_opts())
 
     try:
-        with yt_dlp.YoutubeDL(opts) as ydl:
+        with make_ydl(opts) as ydl:
             meta = ydl.extract_info(url, download=False)
     except Exception as exc:  # noqa: BLE001
         return jsonify(ok=False, error=clean_error(exc)), 502
@@ -653,6 +886,11 @@ def info():
 
     heights = sorted({f.get("height") for f in (meta.get("formats") or []) if f.get("height")}, reverse=True)
 
+    # Only when the feature is on, and only for safely eligible single-file
+    # sources. Always present in the response so the shape is stable; null when
+    # disabled or ineligible, which tells the client to use the normal flow.
+    direct = direct_candidate(meta, quality) if DIRECT_DOWNLOAD else None
+
     return jsonify(
         ok=True,
         title=meta.get("title"),
@@ -662,6 +900,7 @@ def info():
         webpage_url=meta.get("webpage_url") or url,
         heights=heights,
         is_live=bool(meta.get("is_live")),
+        direct=direct,
     )
 
 
@@ -672,6 +911,10 @@ def download():
     quality = (data.get("quality") or "best").strip()
     cookie_browser = (data.get("cookies_browser") or "").strip().lower() or None
 
+    # Rate limit first: validate_url() resolves DNS, which is the expensive part.
+    if rate_limited("download", client_ip(), RATE_LIMIT_JOBS) or global_rate_limited():
+        return jsonify(ok=False, error="Too many downloads from your address. Try again later."), 429
+
     error = validate_url(url)
     if error:
         return jsonify(ok=False, error=error), 400
@@ -680,11 +923,12 @@ def download():
     if cookie_browser and cookie_browser not in ALLOWED_COOKIE_BROWSERS:
         return jsonify(ok=False, error=f"Unsupported browser: {cookie_browser}"), 400
 
-    if rate_limited("download", client_ip(), RATE_LIMIT_JOBS):
-        return jsonify(ok=False, error="Too many downloads from your address. Try again later."), 429
-
     if active_job_count() >= MAX_CONCURRENT_JOBS:
         return jsonify(ok=False, error="The server is busy. Please try again in a moment."), 429
+
+    free_mb = disk_free_mb()
+    if MIN_FREE_MB > 0 and free_mb is not None and free_mb < MIN_FREE_MB:
+        return jsonify(ok=False, error="The server is low on disk space. Try again later."), 503
 
     job_id = start_job(url, quality, cookie_browser)
     return jsonify(ok=True, job_id=job_id)
@@ -722,16 +966,31 @@ def get_file(job_id: str):
 
 @app.delete("/job/<job_id>")
 def delete_job(job_id: str):
-    if job_id not in JOBS:
+    # Only ever look up well-formed ids, so a hostile path cannot reach the store.
+    if not JOB_ID_RE.match(job_id):
         return jsonify(ok=False, error="Unknown job."), 404
+    with JOBS_LOCK:
+        job = JOBS.get(job_id)
+    if not job:
+        return jsonify(ok=False, error="Unknown job."), 404
+    if job.get("status") in ("queued", "downloading", "processing"):
+        # Never rmtree a folder a worker is still writing to: ask the worker to
+        # stop, and let it clean up (run_job does) so the delete is race-free.
+        event = job.get("cancel_event")
+        if event is not None:
+            event.set()
+        return jsonify(ok=True, cancelled=True)
     drop_job(job_id)
     return jsonify(ok=True)
 
 
+@app.errorhandler(413)
+def payload_too_large(_):
+    return jsonify(ok=False, error="Request body too large."), 413
+
+
 @app.errorhandler(404)
 def not_found(_):
-    if request.path.startswith("/api"):
-        return jsonify(ok=False, error="Not found."), 404
     return jsonify(ok=False, error="Not found."), 404
 
 

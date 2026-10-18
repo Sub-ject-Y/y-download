@@ -70,10 +70,13 @@ desktop's application menu. If it doesn't appear, run
 2. Optionally hit **Preview** to see title, thumbnail and available resolutions.
 3. Pick a **Quality**: Best MP4, 1080p, 720p, 480p, or Audio-only MP3 192k.
 4. Hit **Download**. The progress bar tracks it, then the file lands in your
-   browser's normal downloads.
+   browser's normal downloads. With `YTDL_DIRECT=1`, eligible single-file sources
+   are saved straight from the source and never touched by the server; everything
+   else uses the server-side flow.
 
 Finished files live in `downloads/<job-id>/` and are deleted automatically after
-10 minutes (configurable).
+10 minutes (configurable). A job that fails or is cancelled deletes its own
+folder immediately, so partial downloads never linger.
 
 ---
 
@@ -149,6 +152,19 @@ A missing `ffmpeg` or an unwritable media directory returns **503**.
 
 ---
 
+## Tests
+
+The suite covers the SSRF guard (initial URLs and redirect hops), auth, the
+rate-limit ordering, size/disk limits, cleanup on failure and cancellation,
+concurrent `/health`, and safe job deletion. It uses only the standard library
+and a temporary media directory, so it never touches `downloads/`:
+
+```bash
+.venv/bin/python -m unittest discover -s tests -t . -v
+```
+
+---
+
 ## Configuration
 
 Every setting is an environment variable. See `.env.example` for the annotated
@@ -164,13 +180,22 @@ list. Nothing is required locally.
 | `YTDL_MAX_CONCURRENT_JOBS` | `3` | Downloads running at once |
 | `YTDL_RATE_LIMIT_JOBS` | `10` | Downloads per IP per hour (`0` disables) |
 | `YTDL_RATE_LIMIT_PREVIEWS` | `60` | `/info` calls per IP per hour |
-| `YTDL_SWEEP_ORPHANS` | `1` | Wipe unknown leftover folders. `run.sh` sets `0` locally |
+| `YTDL_RATE_LIMIT_GLOBAL` | `0` | Site-wide hourly ceiling shared by all clients (`0` disables) |
+| `YTDL_MAX_REQUEST_BYTES` | `16384` | Largest accepted JSON request body |
+| `YTDL_MAX_FILESIZE_MB` | `2048` | Largest single download in MB (`0` disables) |
+| `YTDL_MIN_FREE_MB` | `512` | Refuse new jobs below this much free disk (`0` disables) |
+| `YTDL_TRUSTED_PROXY_HOPS` | `1` in server mode, else `0` | Proxy hops to trust in `X-Forwarded-For` (`0` ignores it) |
+| `YTDL_FORWARDED_ALLOW_IPS` | `*` | Passed to gunicorn as `forwarded_allow_ips` (scheme detection) |
+| `YTDL_SWEEP_ORPHANS` | `1` | Wipe unknown leftover job folders. `run.sh` sets `0` locally |
 | `YTDL_ACCESS_TOKEN` | — | If set, the whole site requires HTTP Basic auth |
 | `YTDL_USERNAME` | `y-download` | Basic-auth username |
+| `YTDL_REQUIRE_AUTH` | `0` | If `1`, refuse to start in server mode without a token |
+| `YTDL_REQUIRE_GUARD` | `0` | If `1`, refuse to start when the SSRF redirect guard can't be installed |
 | `YTDL_COOKIES_B64` | — | Base64 Netscape cookie jar, for bot-checked videos |
 | `YTDL_COOKIES_FILE` | `./.cookies.txt` | Path to a cookie jar instead |
 | `YTDL_PROXY` | — | Outbound proxy for yt-dlp |
 | `YTDL_GENERIC_IMPERSONATE` | `1` | Browser impersonation for the generic extractor (needs `curl-cffi`) |
+| `YTDL_DIRECT` | `0` | If `1`, `/info` may return a direct CDN URL so the browser fetches eligible single-file sources itself |
 
 ### Secrets
 
@@ -198,17 +223,24 @@ personal files are gitignored and excluded from the Docker build context.
 5. **Free bandwidth is 100 GB/month** shared across the whole workspace.
 6. **Downloads are synchronous per thread, not queued.** With
    `YTDL_MAX_CONCURRENT_JOBS=3`, the 4th request gets `429` instead of waiting.
-7. **Rate limiting is in-process and best-effort.** `X-Forwarded-For` can be
-   spoofed; the concurrency cap is the real protection. Restarting resets counters.
+7. **Rate limiting is in-process and best-effort.** The client IP is taken from
+   the right-hand side of `X-Forwarded-For` using `YTDL_TRUSTED_PROXY_HOPS`, so a
+   client cannot forge its identity by prepending entries, but it is only as
+   trustworthy as that setting. Restarting resets counters. With auth off, the
+   concurrency cap (and `YTDL_RATE_LIMIT_GLOBAL`, if set) is the real protection.
 8. **Basic auth is optional and off by default.** An open instance is an open
    download proxy for anyone who finds the URL. Set `YTDL_ACCESS_TOKEN` for
-   anything public. `robots.txt` disallows all crawlers as a weak extra.
-9. **The SSRF guard has a residual DNS-rebinding gap.** Hosts are resolved and
-   rejected when they point at a private address, but yt-dlp resolves the name
-   again when it fetches, so a name that changes its answer between the two
-   lookups could still slip through. Closing that fully needs an egress proxy;
-   the guard stops the ordinary cases (metadata endpoints, `localhost`, RFC1918,
-   IPv6 ULA, `.internal`/`.local` names) and always fails closed when DNS fails.
+   anything public (or `YTDL_REQUIRE_AUTH=1` to make its absence fatal).
+   `robots.txt` disallows all crawlers as a weak extra.
+9. **The SSRF guard checks every redirect hop, with a residual DNS-rebinding
+   gap.** The user's URL *and* each redirect `Location` are resolved and rejected
+   when they point at a private address (`netguard.py`), and DNS failures fail
+   closed. The one gap left is TOCTOU: yt-dlp resolves the name again when it
+   actually connects, so a name that changes its answer between the two lookups
+   could still slip through. Closing that fully needs an egress proxy. If a
+   future yt-dlp changes the internals the guard hooks into, startup logs a
+   warning (fatal with `YTDL_REQUIRE_GUARD=1`) and browser impersonation is
+   disabled so requests fall back to the guarded urllib handler.
 10. **A publicly hosted downloader may breach the terms of service** of the sites
    it fetches from, and possibly of your host. The instance can be suspended.
    Keep it private or password-protected and only save content you have the right to save.
@@ -220,6 +252,17 @@ personal files are gitignored and excluded from the Docker build context.
 12. **Free instance hours are capped at 750 per workspace per month.** One
     always-on service is ~730 hours, so the spin-down on idle is what keeps you
     inside the budget. Exceeding it suspends your free services until the next month.
+13. **Direct-to-device downloads (`YTDL_DIRECT=1`) are best-effort and
+    source-dependent.** Only a single, already-muxed file with a plain `http(s)`
+    URL qualifies; anything needing a video+audio merge, HLS/DASH, or an MP3
+    transcode (YouTube included) still uses the server. The candidate URL is
+    re-validated with the same SSRF guard and is never logged, but the browser
+    fetches it cross-origin, so the saved filename cannot be controlled, the
+    browser may *play* rather than save depending on the source's
+    `Content-Type`, and a failure (expired, IP-bound, or header-gated URL)
+    surfaces in the browser and **cannot be reliably detected by JavaScript** -
+    there is no guaranteed automatic retry through the server once a navigation
+    has started.
 
 ## Troubleshooting
 
@@ -263,6 +306,8 @@ Downloaded files are deleted after the TTL. Start the job again.
 
 ```
 app.py                  Flask app: routes, yt-dlp options, job store, guards
+netguard.py             SSRF guard: URL checks + redirect-hop validation hooks
+tests/                  unittest suite (`python -m unittest discover`)
 run.sh                  local launcher: start / -d / stop / status / logs
 Dockerfile              production image (python + ffmpeg + node/deno)
 render.yaml             Render Blueprint (free Docker web service)
@@ -283,7 +328,7 @@ downloads/              temporary media output (gitignored)
 | `/` | GET | The page |
 | `/health` | GET | Health/readiness probe (never requires auth) |
 | `/robots.txt` | GET | Disallow all crawlers |
-| `/info` | POST | Metadata: title, thumbnail, duration, heights |
+| `/info` | POST | Metadata: title, thumbnail, duration, heights, and (when `YTDL_DIRECT=1`) a `direct` URL for eligible single-file sources |
 | `/download` | POST | Start a job → `{job_id}` |
 | `/progress/<job_id>` | GET | Poll status/percent/speed/eta |
 | `/file/<job_id>` | GET | Stream the finished file as an attachment |

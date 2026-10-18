@@ -11,6 +11,10 @@ const cookieValue = () => (cookiesSel ? cookiesSel.value : "");
 const goBtn = $("go");
 const peekBtn = $("peek");
 
+// Server tells us (via a data attribute, not the layout) whether direct
+// downloads are enabled. When off, every download uses the server-side flow.
+const directEnabled = form.dataset.direct === "1";
+
 const preview = $("preview");
 const pvThumb = $("pv-thumb");
 const pvTitle = $("pv-title");
@@ -133,6 +137,36 @@ peekBtn.addEventListener("click", async () => {
 
 /* ---------- download --------------------------------------------------- */
 
+// Ask the server whether this source can be fetched straight from the CDN.
+// Returns true when a direct navigation was started (no server job, no polling,
+// no /file). Returns false so the caller uses the normal server-side flow.
+//
+// Note: a cross-origin navigation to the media URL cannot be observed or
+// confirmed by JavaScript, and such sources send no CORS headers, so a failure
+// (expired/ip-bound/header-gated URL) surfaces in the browser, not here. This is
+// a best-effort fast path that is re-validated server-side before use.
+async function startDirect(url) {
+  const info = await postJSON("/info", { url, quality: qualitySel.value });
+  if (!info.ok || !info.direct || !info.direct.url) return false;
+
+  jobStatus.textContent = "direct";
+  jobStatus.className = "status ok";
+  jobName.textContent = "";
+  jobMeta.textContent = "Saving straight from the source to this device…";
+  bar.classList.remove("indeterminate");
+  bar.style.width = "100%";
+
+  const a = document.createElement("a");
+  a.href = info.direct.url;
+  a.rel = "noopener noreferrer";
+  // Deliberately no `download` attribute: it is ignored for cross-origin URLs.
+  // Whether the browser saves or plays the file is up to the source's headers.
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  return true;
+}
+
 form.addEventListener("submit", async (event) => {
   event.preventDefault();
 
@@ -155,6 +189,20 @@ form.addEventListener("submit", async (event) => {
   jobCard.classList.remove("hidden");
 
   setBusy(true);
+
+  if (directEnabled) {
+    let usedDirect = false;
+    try {
+      usedDirect = await startDirect(url);
+    } catch (_) {
+      usedDirect = false; // any hiccup: fall through to the server-side path
+    }
+    if (usedDirect) {
+      setBusy(false);
+      return;
+    }
+  }
+
   const data = await postJSON("/download", {
     url,
     quality: qualitySel.value,

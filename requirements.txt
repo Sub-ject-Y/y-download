@@ -20,4 +20,7 @@ yt-dlp-ejs>=0.3.0
 curl-cffi>=0.7.0
 
 # Production WSGI server (used by the Docker image / Render).
-gunicorn>=21.2
+# Pinned: this is the exact version the app was booted and tested against
+# (gunicorn.conf.py uses `forwarded_allow_ips` and the `gthread` worker class,
+# and the curl_cffi/urllib redirect guards assume the current handler layout).
+gunicorn==26.2.0

@@ -20,9 +20,14 @@ _bind_port = os.environ.get("PORT") or os.environ.get("YTDL_PORT") or "8000"
 bind = f"{_bind_host}:{_bind_port}"
 
 # Render terminates TLS at its edge and forwards the real client IP in
-# X-Forwarded-For. Without this, every request would look like it came from the
-# proxy and the per-IP rate limiter would be useless.
-forwarded_allow_ips = "*"
+# X-Forwarded-For. Gunicorn only uses this to decide whether to trust the secure
+# scheme headers (X-Forwarded-Proto), *not* to set REMOTE_ADDR: the app reads
+# X-Forwarded-For itself via YTDL_TRUSTED_PROXY_HOPS (see app.client_ip and the
+# ProxyFix wiring). Keep "*" so https is detected behind Render/Cloudflare.
+#
+# Set YTDL_FORWARDED_ALLOW_IPS to a comma-separated CIDR list if you know your
+# proxy addresses and want to pin them.
+forwarded_allow_ips = os.environ.get("YTDL_FORWARDED_ALLOW_IPS", "*")
 
 # ---------------------------------------------------------------------------
 # Workers

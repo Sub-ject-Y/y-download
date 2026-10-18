@@ -19,7 +19,7 @@
       <p class="sub">Paste a link, pick a quality, download the file straight to this device.</p>
     </header>
 
-    <form id="form" class="card" autocomplete="off">
+    <form id="form" class="card" autocomplete="off" data-direct="{{ 1 if direct_enabled else 0 }}">
       <label class="field">
         <span class="label">Video URL</span>
         <input

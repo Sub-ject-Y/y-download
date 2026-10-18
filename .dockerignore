@@ -28,8 +28,14 @@ downloads/*
 *.m4a
 *.webm
 
-# git / editors / docs
+# git / editors / docs - not needed at runtime
 .git/
 .gitignore
 .github/
+.dockerignore
 Text File.txt
+README.md
+*.md
+tests/
+pyproject.toml
+.env.example
