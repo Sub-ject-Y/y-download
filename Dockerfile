@@ -41,16 +41,6 @@ ENV DENO_DIR=/usr/local \
 # Render injects PORT; 8000 is only the local default.
 EXPOSE 8000
 
-# One worker on purpose: the job registry and download threads live in-process,
-# so extra workers would 404 each other's jobs. Threads handle concurrency.
-CMD ["sh", "-c", "gunicorn app:app \
-      --bind 0.0.0.0:${PORT:-8000} \
-      --worker-class gthread \
-      --workers 1 \
-      --threads 8 \
-      --timeout 120 \
-      --graceful-timeout 30 \
-      --forwarded-allow-ips '*' \
-      --access-logfile - \
-      --error-logfile - \
-      --log-level info"]
+# Config lives in gunicorn.conf.py: one worker + threads on purpose, because the
+# job registry and download threads are per-process (see the file's comments).
+CMD ["gunicorn", "app:app", "-c", "gunicorn.conf.py"]

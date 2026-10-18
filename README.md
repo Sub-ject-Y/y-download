@@ -82,12 +82,13 @@ Finished files live in `downloads/<job-id>/` and are deleted automatically after
 ### How it runs in production
 
 ```bash
-gunicorn app:app --bind 0.0.0.0:$PORT --worker-class gthread --workers 1 --threads 8 --timeout 120
+gunicorn app:app -c gunicorn.conf.py
 ```
 
-**`--workers 1` is deliberate.** The job registry and the download threads live
-in the process, so a second worker would not know about jobs the first one is
-running and `/progress` would 404. Concurrency comes from threads instead.
+`gunicorn.conf.py` holds the production settings; the important one is
+**`workers = 1`**. The job registry and the download threads live inside the
+process, so a second worker would not know about jobs the first one is running
+and `/progress` would 404. Concurrency comes from threads instead.
 
 The app reads `PORT` from the environment (injected by Render and most PaaS
 providers), falls back to `YTDL_PORT`, then to 8000. It binds `0.0.0.0` when
