@@ -100,10 +100,70 @@ LAN.
 
 ### Docker
 
+## 🐳 Run with Docker
+
+### Prerequisites
+
+- [Docker](https://docs.docker.com/get-docker/) installed and running.
+
+### 1. Clone the repository
+
+```bash
+git clone https://github.com/Sub-Ject-Y/y-download.git
+cd y-download
+```
+
+### 2. Build the Docker image
+
 ```bash
 docker build -t y-download .
-docker run -p 8000:8000 -e PORT=8000 y-download
 ```
+
+### 3. Start Y Download
+
+```bash
+docker run -d \
+  --name y-download \
+  -p 8000:8000 \
+  -e PORT=8000 \
+  y-download
+```
+
+### 4. Open the application
+
+Visit [http://localhost:8000](http://localhost:8000) in your browser.
+
+### Container Management
+
+**Stop the application:**
+
+```bash
+docker stop y-download
+```
+
+**Start it again:**
+
+```bash
+docker start y-download
+```
+
+**View logs:**
+
+```bash
+docker logs -f y-download
+```
+
+Press `Ctrl+C` to exit the log viewer without stopping the container.
+
+**Remove the container:**
+
+```bash
+docker stop y-download
+docker rm y-download
+```
+
+**Note:** Downloaded files are stored according to the application's storage configuration. Files stored in temporary container storage may be lost when the container is removed.
+
 
 The image is `python:3.12-slim` plus `ffmpeg` and `nodejs` (and Deno when its
 installer is reachable), and writes media to `/tmp/y-download`.
