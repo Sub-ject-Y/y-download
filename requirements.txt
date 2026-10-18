@@ -1,0 +1,13 @@
+# Y Download dependencies
+#
+# NOTE: ffmpeg and node/deno are NOT pip packages. They are system binaries:
+#   ffmpeg    - merges video+audio, converts to MP3
+#   node/deno - solves YouTube's signature (nsig) challenges
+flask>=3.0
+
+# Keep this recent: YouTube breaks older releases. Update with:
+#   .venv/bin/pip install -U yt-dlp
+yt-dlp>=2024.1.1
+
+# Production WSGI server (used by the Docker image / Render).
+gunicorn>=21.2

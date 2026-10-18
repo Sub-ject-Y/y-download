@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>{{ app_name }} &middot; video downloader</title>
+  <meta name="description" content="{{ app_name }} - paste a link, pick a quality, get the file." />
+  <meta name="application-name" content="{{ app_name }}" />
+  <meta name="apple-mobile-web-app-title" content="{{ app_name }}" />
+  <meta name="theme-color" content="#0e1116" />
+  <meta name="robots" content="noindex, nofollow" />
+  <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='icon.svg') }}" />
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}" />
+</head>
+<body>
+  <main class="shell">
+    <header class="head">
+      <h1><span class="mark">{{ app_name[0] }}</span>{{ app_name[1:] }}</h1>
+      <p class="sub">Paste a link, pick a quality, download the file straight to this device.</p>
+    </header>
+
+    <form id="form" class="card" autocomplete="off">
+      <label class="field">
+        <span class="label">Video URL</span>
+        <input
+          id="url"
+          name="url"
+          type="text"
+          inputmode="url"
+          placeholder="https://youtube.com/shorts/Kt7XVUzjVlE"
+          required
+        />
+      </label>
+
+      <div class="row">
+        <label class="field grow">
+          <span class="label">Quality</span>
+          <select id="quality" name="quality">
+            {% for value, text in qualities.items() %}
+            <option value="{{ value }}">{{ text }}</option>
+            {% endfor %}
+          </select>
+        </label>
+
+        {% if not is_server %}
+        <label class="field grow">
+          <span class="label">Cookies from browser <em>(only if you get a bot check)</em></span>
+          <select id="cookies" name="cookies">
+            <option value="">None</option>
+            <option value="chrome">Chrome</option>
+            <option value="chromium">Chromium</option>
+            <option value="firefox">Firefox</option>
+            <option value="edge">Edge</option>
+            <option value="brave">Brave</option>
+          </select>
+        </label>
+        {% endif %}
+      </div>
+
+      <div class="actions">
+        <button type="submit" class="btn primary" id="go">Download</button>
+        <button type="button" class="btn" id="peek">Preview</button>
+      </div>
+
+      {% if is_server %}
+      <p class="hint">
+        Server-side session &mdash; cookies for age-restricted or bot-checked videos
+        are configured on the host, not in this browser.
+      </p>
+      {% endif %}
+    </form>
+
+    <section id="preview" class="card preview hidden">
+      <img id="pv-thumb" alt="" />
+      <div class="pv-body">
+        <h2 id="pv-title"></h2>
+        <p class="meta" id="pv-meta"></p>
+        <div class="chips" id="pv-chips"></div>
+      </div>
+    </section>
+
+    <section id="job" class="card job hidden">
+      <div class="job-top">
+        <span id="job-status" class="status">starting</span>
+        <span id="job-name" class="job-name"></span>
+      </div>
+
+      <div class="bar"><div class="bar-fill" id="bar"></div></div>
+
+      <p class="meta" id="job-meta"></p>
+
+      <a id="save" class="btn primary hidden" download>Save file</a>
+      <p id="job-error" class="error hidden"></p>
+    </section>
+
+    <footer class="foot">
+      {% if is_server %}
+      <p>{{ app_name }} v{{ version }} &middot; self-hosted. Files are stored in a
+        temporary directory and deleted automatically after {{ ttl_minutes }} minutes.</p>
+      {% else %}
+      <p>{{ app_name }} v{{ version }} &middot; runs entirely on your machine. Files are
+        stored locally and deleted automatically after {{ ttl_minutes }} minutes.</p>
+      {% endif %}
+    </footer>
+  </main>
+
+  <script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>

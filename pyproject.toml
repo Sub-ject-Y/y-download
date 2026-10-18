@@ -1,0 +1,24 @@
+[project]
+name = "y-download"
+version = "1.0.0"
+description = "Y Download - a self-hostable web app that downloads videos with yt-dlp"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+keywords = ["yt-dlp", "downloader", "flask", "youtube", "self-hosted"]
+dependencies = [
+    "flask>=3.0",
+    "yt-dlp>=2024.1.1",
+    "gunicorn>=21.2",
+]
+
+[project.urls]
+Homepage = "https://github.com/"
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP"]
+ignore = ["E501"]

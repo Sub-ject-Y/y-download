@@ -1,0 +1,24 @@
+.venv/
+__pycache__/
+*.pyc
+
+# launcher runtime files
+.ytdl.pid
+ytdl.log
+*.log
+
+# secrets & local config - never commit
+.env
+.env.*
+!.env.example
+.cookies.txt
+cookies.txt
+*.pem
+*.key
+
+# personal files
+Text File.txt
+
+# downloaded media is temporary - never commit it
+downloads/*
+!downloads/.gitkeep

@@ -1,0 +1,54 @@
+# ---------------------------------------------------------------------------
+# Render Blueprint - deploys Y Download as a free Docker web service.
+#
+#   1. Push this repo to GitHub.
+#   2. Render dashboard -> New + -> Blueprint -> pick the repo.
+#   3. Render reads this file and provisions everything below.
+#
+# Free plan notes: the service sleeps after ~15 min idle (next request takes
+# ~30-60s to wake) and the filesystem is ephemeral.
+# ---------------------------------------------------------------------------
+services:
+  - type: web
+    name: y-download
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: free
+    region: frankfurt
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      # Scratch space. Render's disk is ephemeral, so /tmp is the right home.
+      - key: YTDL_MEDIA_DIR
+        value: /tmp/y-download
+      # Delete finished files after 30 minutes.
+      - key: YTDL_TTL_SECONDS
+        value: "1800"
+      # Concurrency + abuse limits.
+      - key: YTDL_MAX_CONCURRENT_JOBS
+        value: "3"
+      - key: YTDL_RATE_LIMIT_JOBS
+        value: "10"
+      # ---------------------------------------------------------------------
+      # HTTP Basic auth. render.yaml cannot carry a literal secret, so choose
+      # one of these in the dashboard:
+      #   * delete these two entries  -> the site is PUBLIC (anyone can use it)
+      #   * set YTDL_ACCESS_TOKEN     -> the site asks for a password
+      #     (username is YTDL_USERNAME below, password is the token)
+      # ---------------------------------------------------------------------
+      - key: YTDL_USERNAME
+        value: y-download
+      - key: YTDL_ACCESS_TOKEN
+        sync: false
+      # ---------------------------------------------------------------------
+      # Only needed when YouTube blocks the host's datacenter IP with
+      # "Sign in to confirm you're not a bot".
+      #
+      #   YTDL_COOKIES_B64 : base64 -w0 cookies.txt   (Netscape cookie jar
+      #                      exported from a logged-in browser)
+      #   YTDL_PROXY       : http://user:pass@host:port
+      # ---------------------------------------------------------------------
+      - key: YTDL_COOKIES_B64
+        sync: false
+      - key: YTDL_PROXY
+        sync: false

@@ -1,0 +1,35 @@
+# Build context exclusions for the production image.
+# Never let private data reach the container / registry.
+
+# python
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# runtime junk
+.ytdl.pid
+ytdl.log
+*.log
+
+# secrets & local config - NEVER ship these
+.env
+.env.*
+.cookies.txt
+cookies.txt
+*.pem
+*.key
+
+# downloaded media & user files
+downloads/*
+!downloads/.gitkeep
+*.mp4
+*.mp3
+*.m4a
+*.webm
+
+# git / editors / docs
+.git/
+.gitignore
+.github/
+Text File.txt
