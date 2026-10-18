@@ -9,5 +9,10 @@ flask>=3.0
 #   .venv/bin/pip install -U yt-dlp
 yt-dlp>=2024.1.1
 
+# Official companion package: bundles the JS challenge solver (EJS) that
+# YouTube's signature protection needs. Without it yt-dlp downloads the solver
+# from GitHub at runtime - fine locally, fragile inside a container.
+yt-dlp-ejs>=0.3.0
+
 # Production WSGI server (used by the Docker image / Render).
 gunicorn>=21.2

@@ -17,6 +17,10 @@ process (Render, Railway, Fly.io, your own VPS...).
 | ffmpeg | merges video+audio, converts to MP3 | `ffmpeg -version` |
 | node **or** deno | solves YouTube's signature challenges | `node --version` |
 
+`ffmpeg` and `node` are system packages, not pip packages. The JavaScript
+challenge solver itself ships as a pip package (`yt-dlp-ejs`) and is installed
+with the other dependencies.
+
 `ffmpeg` and `node` are system packages, not pip packages:
 
 ```bash
