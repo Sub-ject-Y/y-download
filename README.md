@@ -170,6 +170,7 @@ list. Nothing is required locally.
 | `YTDL_COOKIES_B64` | — | Base64 Netscape cookie jar, for bot-checked videos |
 | `YTDL_COOKIES_FILE` | `./.cookies.txt` | Path to a cookie jar instead |
 | `YTDL_PROXY` | — | Outbound proxy for yt-dlp |
+| `YTDL_GENERIC_IMPERSONATE` | `1` | Browser impersonation for the generic extractor (needs `curl-cffi`) |
 
 ### Secrets
 
@@ -220,6 +221,11 @@ personal files are gitignored and excluded from the Docker build context.
 YouTube is throttling the host. Locally, pick your browser in the **Cookies from
 browser** dropdown (close that browser first on some setups). On a server, set
 `YTDL_COOKIES_B64`.
+
+**"Cloudflare anti-bot challenge" / HTTP 403**
+The site is fingerprinting the server's IP. `curl-cffi` is installed and the
+generic extractor impersonates Chrome by default (`YTDL_GENERIC_IMPERSONATE=1`).
+If it still fails, set `YTDL_PROXY`.
 
 **"nsig extraction failed" or only low-res formats**
 No JavaScript runtime. Install `node` or `deno` and restart.

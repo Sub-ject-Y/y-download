@@ -31,6 +31,13 @@ from flask import Flask, Response, jsonify, render_template, request, send_file
 
 import yt_dlp
 
+try:  # optional: enables TLS/JA3 browser impersonation (see ytdlp_base_opts)
+    import curl_cffi  # noqa: F401
+
+    HAS_CURL_CFFI = True
+except ImportError:
+    HAS_CURL_CFFI = False
+
 # --------------------------------------------------------------------------
 # Configuration
 # --------------------------------------------------------------------------
@@ -87,6 +94,10 @@ ACCESS_USER = os.environ.get("YTDL_USERNAME") or "y-download"
 PROXY = os.environ.get("YTDL_PROXY") or ""
 COOKIES_B64 = os.environ.get("YTDL_COOKIES_B64") or ""
 COOKIES_FILE = Path(os.environ.get("YTDL_COOKIES_FILE") or (BASE_DIR / ".cookies.txt"))
+
+# Impersonate a real browser for the generic extractor. Many sites answer
+# datacenter IPs with a Cloudflare 403; this is the documented remedy.
+GENERIC_IMPERSONATE = _env_flag("YTDL_GENERIC_IMPERSONATE", True)
 
 # The quality choices offered in the UI -> yt-dlp format selector strings.
 #
@@ -265,6 +276,12 @@ def ytdlp_base_opts() -> dict:
     runtimes = supported_js_runtimes()
     if runtimes:
         opts["js_runtimes"] = runtimes
+    # The generic extractor deliberately does NOT impersonate by default
+    # (yt-dlp issue #11335), which leaves direct-file links 403-ing behind
+    # Cloudflare on datacenter IPs. Opt in there only - yt-dlp warns that
+    # forcing impersonation globally can hurt download speed and stability.
+    if GENERIC_IMPERSONATE and HAS_CURL_CFFI:
+        opts["extractor_args"] = {"generic": {"impersonate": ["chrome"]}}
     return opts
 
 
@@ -577,6 +594,7 @@ def health():
                 "media_dir_free_mb": free_mb,
                 "cookies_configured": bool(COOKIES_PATH and COOKIES_PATH.is_file()),
                 "proxy_configured": bool(PROXY),
+                "impersonation": bool(GENERIC_IMPERSONATE and HAS_CURL_CFFI),
                 "auth_required": bool(ACCESS_TOKEN),
             },
         ),

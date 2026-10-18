@@ -14,5 +14,10 @@ yt-dlp>=2024.1.1
 # from GitHub at runtime - fine locally, fragile inside a container.
 yt-dlp-ejs>=0.3.0
 
+# TLS/JA3 browser impersonation. Many sites answer a datacenter IP with a
+# Cloudflare 403; yt-dlp needs this to work around it. Without it the app
+# simply reports the 403 rather than crashing (see ytdlp_base_opts).
+curl-cffi>=0.7.0
+
 # Production WSGI server (used by the Docker image / Render).
 gunicorn>=21.2
