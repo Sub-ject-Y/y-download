@@ -1,15 +1,40 @@
+/* ==========================================================================
+   Y Download — minimalist theme
+   One neutral system: white surfaces, charcoal text, light-gray borders and
+   very soft shadows. The near-black primary button is the only strong fill.
+   Visual only; no layout, markup or behaviour changes.
+   ========================================================================== */
+
 :root {
-  --bg: #0e1116;
-  --panel: #161b22;
-  --panel-2: #1c232c;
-  --line: #262d38;
-  --text: #e6edf3;
-  --muted: #8b97a6;
-  --accent: #4f8cff;
-  --accent-2: #2f6fe4;
-  --ok: #3fb950;
-  --err: #f85149;
+  color-scheme: light;
+
+  /* -- surfaces ----------------------------------------------------------- */
+  --bg: #F8F8FF;         /* page background (white)               */
+  --white: #FFFFFF;      /* every card, field and button surface  */
+
+  /* -- ink ---------------------------------------------------------------- */
+  --ink: #171717;        /* near black — primary button, bar fill */
+  --ink-hover: #2B2B2B;
+  --ink-text: #FFFFFF;   /* text on the primary button            */
+  --text: #242424;       /* charcoal — main text                  */
+  --muted: #6B7076;      /* neutral gray — secondary text         */
+  --placeholder: #8A8F97;
+
+  /* -- lines and tints ---------------------------------------------------- */
+  --line: #DADDE2;         /* every border                        */
+  --line-hover: #C8CCD3;   /* border on hover                     */
+  --sunken: #F0F1F3;       /* progress track, thumbnail placeholder */
+  --surface-hover: #F4F5F7;/* secondary button hover              */
+  --selection: #E3E5E9;
+
+  /* -- semantic status (kept: gray-on-gray would hide errors) ------------- */
+  --ok: #2F7A4C;
+  --err: #A8342A;
+
   --radius: 12px;
+  --shadow:
+    0 1px 2px rgba(23, 23, 23, 0.04),
+    0 10px 26px -16px rgba(23, 23, 23, 0.16);
 }
 
 * { box-sizing: border-box; }
@@ -21,7 +46,10 @@ html, body {
   color: var(--text);
   font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
 }
+
+::selection { background: var(--selection); color: var(--text); }
 
 .shell {
   max-width: 720px;
@@ -29,29 +57,43 @@ html, body {
   padding: 48px 20px 64px;
 }
 
+/* -- header --------------------------------------------------------------- */
+
 .head { margin-bottom: 24px; }
 
 .head h1 {
   margin: 0 0 8px;
   font-size: 34px;
+  font-weight: 700;
   letter-spacing: -0.5px;
+  color: var(--text);
 }
 
-.mark { color: var(--accent); }
+/* The brand mark is set in the same near-black as the primary action, which
+   ties the wordmark to the button instead of introducing an accent hue. */
+.mark { color: var(--ink); }
 
 .sub {
   margin: 0;
   color: var(--muted);
   font-size: 15px;
+  line-height: 1.5;
 }
 
+/* -- cards --------------------------------------------------------------- */
+
+/* One rule for every panel in the app — the download form, the preview card
+   and the progress card all render identically. */
 .card {
-  background: var(--panel);
+  background: var(--white);
   border: 1px solid var(--line);
   border-radius: var(--radius);
+  box-shadow: var(--shadow);
   padding: 20px;
   margin-bottom: 16px;
 }
+
+/* -- fields -------------------------------------------------------------- */
 
 .field {
   display: block;
@@ -63,32 +105,36 @@ html, body {
 .label {
   display: block;
   font-size: 12px;
+  font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.6px;
   color: var(--muted);
   margin-bottom: 7px;
 }
 
-.label em { font-style: normal; text-transform: none; letter-spacing: 0; opacity: 0.75; }
+.label em { font-style: normal; font-weight: 400; text-transform: none; letter-spacing: 0; opacity: 0.8; }
 
 input[type="text"], select {
   width: 100%;
   padding: 11px 13px;
   font-size: 15px;
+  font-family: inherit;
   color: var(--text);
-  background: var(--panel-2);
+  background: var(--white);
   border: 1px solid var(--line);
   border-radius: 9px;
   outline: none;
-  transition: border-color 0.15s, box-shadow 0.15s;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
 }
+
+input[type="text"]:hover, select:hover { border-color: var(--line-hover); }
 
 input[type="text"]:focus, select:focus {
-  border-color: var(--accent);
-  box-shadow: 0 0 0 3px rgba(79, 140, 255, 0.16);
+  border-color: var(--ink);
+  box-shadow: 0 0 0 3px rgba(23, 23, 23, 0.08);
 }
 
-input::placeholder { color: #5d6a7a; }
+input::placeholder { color: var(--placeholder); }
 
 .row {
   display: flex;
@@ -103,11 +149,14 @@ input::placeholder { color: #5d6a7a; }
   flex-wrap: wrap;
 }
 
+/* -- buttons ------------------------------------------------------------- */
+
 .btn {
   appearance: none;
   border: 1px solid var(--line);
-  background: var(--panel-2);
+  background: var(--white);
   color: var(--text);
+  font-family: inherit;
   font-size: 15px;
   font-weight: 500;
   padding: 11px 20px;
@@ -115,23 +164,37 @@ input::placeholder { color: #5d6a7a; }
   cursor: pointer;
   text-decoration: none;
   display: inline-block;
-  transition: background 0.15s, border-color 0.15s, transform 0.05s;
+  text-align: center;
+  transition: background 0.15s ease, border-color 0.15s ease, transform 0.05s ease;
 }
 
-.btn:hover { background: #232b35; }
+.btn:hover { background: var(--surface-hover); border-color: var(--line-hover); }
 .btn:active { transform: translateY(1px); }
 
-.btn.primary {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: #fff;
+.btn:focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: 2px;
 }
 
-.btn.primary:hover { background: var(--accent-2); }
+.btn.primary {
+  background: var(--ink);
+  border-color: var(--ink);
+  color: var(--ink-text);
+  font-weight: 600;
+}
 
-.btn:disabled { opacity: 0.55; cursor: not-allowed; }
+.btn.primary:hover { background: var(--ink-hover); border-color: var(--ink-hover); }
 
-/* preview ---------------------------------------------------------------- */
+.btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  transform: none;
+}
+
+.btn:disabled:hover { background: var(--white); border-color: var(--line); }
+.btn.primary:disabled:hover { background: var(--ink); border-color: var(--ink); }
+
+/* -- preview ------------------------------------------------------------- */
 
 .preview {
   display: flex;
@@ -142,7 +205,8 @@ input::placeholder { color: #5d6a7a; }
 .preview img {
   width: 168px;
   border-radius: 9px;
-  background: var(--panel-2);
+  background: var(--sunken);
+  border: 1px solid var(--line);
   flex: 0 0 auto;
   aspect-ratio: 16 / 9;
   object-fit: cover;
@@ -153,7 +217,9 @@ input::placeholder { color: #5d6a7a; }
 .pv-body h2 {
   margin: 2px 0 8px;
   font-size: 17px;
+  font-weight: 600;
   line-height: 1.35;
+  color: var(--text);
   word-break: break-word;
 }
 
@@ -175,12 +241,12 @@ input::placeholder { color: #5d6a7a; }
   font-size: 12px;
   padding: 3px 9px;
   border-radius: 999px;
-  background: var(--panel-2);
+  background: var(--white);
   border: 1px solid var(--line);
   color: var(--muted);
 }
 
-/* job / progress --------------------------------------------------------- */
+/* -- job / progress ------------------------------------------------------ */
 
 .job-top {
   display: flex;
@@ -194,8 +260,8 @@ input::placeholder { color: #5d6a7a; }
   font-size: 12px;
   text-transform: uppercase;
   letter-spacing: 0.7px;
-  font-weight: 600;
-  color: var(--accent);
+  font-weight: 700;
+  color: var(--text);
 }
 
 .status.ok { color: var(--ok); }
@@ -212,7 +278,8 @@ input::placeholder { color: #5d6a7a; }
 .bar {
   height: 8px;
   border-radius: 999px;
-  background: var(--panel-2);
+  background: var(--sunken);
+  border: 1px solid var(--line);
   overflow: hidden;
   margin-bottom: 12px;
 }
@@ -221,7 +288,7 @@ input::placeholder { color: #5d6a7a; }
   height: 100%;
   width: 0%;
   border-radius: 999px;
-  background: linear-gradient(90deg, var(--accent), #7aa8ff);
+  background: var(--ink);
   transition: width 0.3s ease;
 }
 
@@ -246,7 +313,7 @@ input::placeholder { color: #5d6a7a; }
   margin: 16px 0 0;
   font-size: 12.5px;
   line-height: 1.55;
-  color: #63707f;
+  color: var(--muted);
 }
 
 .hidden { display: none !important; }
@@ -254,15 +321,28 @@ input::placeholder { color: #5d6a7a; }
 .foot p {
   margin: 20px 0 0;
   font-size: 12.5px;
-  color: #63707f;
+  color: var(--muted);
   text-align: center;
+  line-height: 1.6;
 }
 
 #save { margin-top: 14px; }
 
+/* -- responsive ---------------------------------------------------------- */
+
+@media (max-width: 720px) {
+  .shell { padding: 40px 18px 56px; }
+  .head h1 { font-size: 31px; }
+  .preview img { width: 140px; }
+}
+
 @media (max-width: 560px) {
   .shell { padding: 32px 16px 48px; }
   .head h1 { font-size: 27px; }
+  .sub { font-size: 14.5px; }
+  .card { padding: 16px; }
   .preview { flex-direction: column; }
   .preview img { width: 100%; }
+  .actions { flex-direction: column; }
+  .actions .btn { width: 100%; }
 }
