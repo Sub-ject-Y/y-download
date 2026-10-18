@@ -157,52 +157,62 @@ def clean_error(exc: BaseException) -> str:
     return first[:400] or exc.__class__.__name__
 
 
-def _host_is_public(host: str) -> bool:
-    """
-    Reject loopback / private / link-local targets.
+INTERNAL_HOST_SUFFIXES = (
+    ".internal", ".local", ".localhost", ".home.arpa",
+    ".lan", ".corp", ".intranet", ".cluster.local",
+)
 
-    Without this, /download becomes a server-side request forgery hole: yt-dlp's
+
+def _resolve(host: str) -> list[str] | None:
+    try:
+        return [info[4][0] for info in socket.getaddrinfo(host, None)]
+    except (socket.gaierror, OSError):
+        return None
+
+
+def _host_error(host: str) -> str | None:
+    """
+    Return a refusal reason for a host yt-dlp must not fetch, else None.
+
+    Without this, /download is a server-side request forgery hole: yt-dlp's
     generic extractor will happily fetch http://169.254.169.254/ (cloud metadata)
-    or any service reachable from inside the host's network.
+    or any service reachable from inside the host's private network.
+
+    Fails CLOSED. An earlier version allowed the request through when DNS
+    resolution failed, which let http://metadata.google.internal/ reach the
+    extractor.
     """
     if not host:
-        return False
-    if host.lower() in ("localhost", "localhost.localdomain"):
-        return False
-
-    def resolve() -> list[str] | None:
-        try:
-            return [info[4][0] for info in socket.getaddrinfo(host, None)]
-        except (socket.gaierror, OSError):
-            return None
+        return "That link has no host."
+    host = host.strip().rstrip(".").lower()
+    if not host:
+        return "That link has no host."
+    if host == "localhost" or host.endswith(INTERNAL_HOST_SUFFIXES):
+        return "That host is not allowed."
+    # A single-label name is never a public DNS name (also catches "[::1]").
+    if "." not in host:
+        return "That host is not allowed."
 
     box: list[list[str] | None] = []
-    worker = threading.Thread(target=lambda: box.append(resolve()), daemon=True)
+    worker = threading.Thread(target=lambda: box.append(_resolve(host)), daemon=True)
     worker.start()
     worker.join(timeout=4)
     if not box:
-        return False  # resolution hung - fail closed
-
+        return "Could not resolve that host (timed out)."
     addresses = box[0]
     if not addresses:
-        # Could not resolve at all. Let yt-dlp produce the real error message.
-        return True
+        return "Could not resolve that host."
 
     for address in addresses:
         try:
             ip = ipaddress.ip_address(address.split("%")[0])
         except ValueError:
-            return False
-        if (
-            ip.is_private
-            or ip.is_loopback
-            or ip.is_link_local
-            or ip.is_reserved
-            or ip.is_multicast
-            or ip.is_unspecified
-        ):
-            return False
-    return True
+            return "That host is not allowed."
+        # is_global is False for private, loopback, link-local, reserved,
+        # multicast, unspecified and shared (CGNAT) ranges.
+        if not ip.is_global:
+            return "That host is not allowed."
+    return None
 
 
 def validate_url(url: str) -> str | None:
@@ -216,9 +226,7 @@ def validate_url(url: str) -> str | None:
         return "Only http:// and https:// links are supported."
     if not parsed.netloc:
         return "That doesn't look like a valid link."
-    if not _host_is_public(parsed.hostname or ""):
-        return "That host is not allowed."
-    return None
+    return _host_error(parsed.hostname or "")
 
 
 def supported_js_runtimes() -> dict:

@@ -203,15 +203,21 @@ personal files are gitignored and excluded from the Docker build context.
 8. **Basic auth is optional and off by default.** An open instance is an open
    download proxy for anyone who finds the URL. Set `YTDL_ACCESS_TOKEN` for
    anything public. `robots.txt` disallows all crawlers as a weak extra.
-9. **A publicly hosted downloader may breach the terms of service** of the sites
+9. **The SSRF guard has a residual DNS-rebinding gap.** Hosts are resolved and
+   rejected when they point at a private address, but yt-dlp resolves the name
+   again when it fetches, so a name that changes its answer between the two
+   lookups could still slip through. Closing that fully needs an egress proxy;
+   the guard stops the ordinary cases (metadata endpoints, `localhost`, RFC1918,
+   IPv6 ULA, `.internal`/`.local` names) and always fails closed when DNS fails.
+10. **A publicly hosted downloader may breach the terms of service** of the sites
    it fetches from, and possibly of your host. The instance can be suspended.
    Keep it private or password-protected and only save content you have the right to save.
-10. **Render can suspend free services that generate a lot of outbound traffic.**
+11. **Render can suspend free services that generate a lot of outbound traffic.**
     Their docs say Render "may suspend a Free web service that initiates an
     uncommonly high volume of traffic over the public internet", and a
     video downloader does exactly that on every job. This is the single biggest
     risk to a long-lived free deployment, and it is outside the app's control.
-11. **Free instance hours are capped at 750 per workspace per month.** One
+12. **Free instance hours are capped at 750 per workspace per month.** One
     always-on service is ~730 hours, so the spin-down on idle is what keeps you
     inside the budget. Exceeding it suspends your free services until the next month.
 
@@ -231,8 +237,14 @@ If it still fails, set `YTDL_PROXY`.
 No JavaScript runtime. Install `node` or `deno` and restart.
 
 **"That host is not allowed."**
-Loopback/private/link-local addresses are blocked on purpose so the app cannot
-be used to probe the host's internal network.
+Loopback/private/link-local addresses and internal names (`.internal`, `.local`,
+`.lan`, …) are blocked on purpose, so the app cannot be used to probe the host's
+private network or its cloud metadata service. If DNS cannot resolve the host,
+the request is refused rather than allowed through.
+
+**"Could not resolve that host."**
+The app resolves every host before fetching it and fails closed. Check the
+link, or that the server's DNS is working.
 
 **It worked yesterday and broke today**
 YouTube changes constantly. Update yt-dlp:
