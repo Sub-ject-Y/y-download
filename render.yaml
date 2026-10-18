@@ -7,6 +7,9 @@
 #
 # Free plan notes: the service sleeps after ~15 min idle (next request takes
 # ~30-60s to wake) and the filesystem is ephemeral.
+#
+# No payment method is required. Free instances are 0.1 CPU / 512 MB RAM and
+# draw on the workspace's 750 monthly free instance hours.
 # ---------------------------------------------------------------------------
 services:
   - type: web
@@ -16,7 +19,10 @@ services:
     plan: free
     region: frankfurt
     healthCheckPath: /health
-    autoDeploy: true
+    # Redeploy on every push to main (replaces the deprecated autoDeploy).
+    autoDeployTrigger: commit
+    # Give an in-flight download a moment to finish before SIGKILL.
+    maxShutdownDelaySeconds: 60
     envVars:
       # Scratch space. Render's disk is ephemeral, so /tmp is the right home.
       - key: YTDL_MEDIA_DIR

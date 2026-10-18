@@ -200,6 +200,14 @@ personal files are gitignored and excluded from the Docker build context.
 9. **A publicly hosted downloader may breach the terms of service** of the sites
    it fetches from, and possibly of your host. The instance can be suspended.
    Keep it private or password-protected and only save content you have the right to save.
+10. **Render can suspend free services that generate a lot of outbound traffic.**
+    Their docs say Render "may suspend a Free web service that initiates an
+    uncommonly high volume of traffic over the public internet", and a
+    video downloader does exactly that on every job. This is the single biggest
+    risk to a long-lived free deployment, and it is outside the app's control.
+11. **Free instance hours are capped at 750 per workspace per month.** One
+    always-on service is ~730 hours, so the spin-down on idle is what keeps you
+    inside the budget. Exceeding it suspends your free services until the next month.
 
 ## Troubleshooting
 
