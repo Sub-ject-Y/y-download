@@ -89,11 +89,16 @@ COOKIES_B64 = os.environ.get("YTDL_COOKIES_B64") or ""
 COOKIES_FILE = Path(os.environ.get("YTDL_COOKIES_FILE") or (BASE_DIR / ".cookies.txt"))
 
 # The quality choices offered in the UI -> yt-dlp format selector strings.
+#
+# The trailing "/b" is an important fallback: sources that expose a single
+# pre-muxed file with no height metadata (direct .mp4 links, some sites' only
+# format) match nothing in the capped selectors, so without it a "720p" request
+# fails with "Requested format is not available".
 QUALITY_FORMATS: dict[str, str] = {
     "best": "bv*+ba/b",
-    "1080": "bv*[height<=1080]+ba/b[height<=1080]",
-    "720": "bv*[height<=720]+ba/b[height<=720]",
-    "480": "bv*[height<=480]+ba/b[height<=480]",
+    "1080": "bv*[height<=1080]+ba/b[height<=1080]/b",
+    "720": "bv*[height<=720]+ba/b[height<=720]/b",
+    "480": "bv*[height<=480]+ba/b[height<=480]/b",
     "audio": "ba/b",
 }
 
